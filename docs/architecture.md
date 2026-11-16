@@ -49,7 +49,7 @@ The fixture's canonical timestamps are UTC. This is a test-source contract, not 
 
 ## Choices and tradeoffs
 
-**SQLite and the standard library:** make a reviewer able to reproduce failure behavior without credentials or installation. SQLite is appropriate for the small single-writer demo, not a distributed warehouse benchmark.
+**SQLite and the standard library:** let anyone reproduce the failure behaviour without credentials or installation. SQLite is appropriate for the small single-writer demo, not a distributed warehouse benchmark.
 
 **Latest-version canonical table:** the source promises stable trip IDs and monotonically increasing update times. Earlier versions remain available in raw files. Same-version records with conflicting fields are quarantined. Identical/stale versions are ignored; received time alone cannot revise a business fact.
 

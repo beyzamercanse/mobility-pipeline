@@ -30,6 +30,12 @@ Metric definitions:
 - **Corrections:** incoming newer versions that replace a trip already present; a correction arriving first is an initial insert, not a correction counter event.
 - **Accepted rows:** inserted or updated deliveries. Includes corrections and is therefore not equal to canonical trips.
 
+Restatement tables:
+
+- **`daily_snapshots`:** one row per `(seq, date)`. `seq` is the batch's commit position, written in the same transaction as the batch. `trips` and `fare_cents` (integer cents) are the day's totals immediately after that batch.
+- **`mart_restatements`:** one row per pickup date. `first_*` values come from the first snapshot containing the date, `final_*` from the latest. `revisions` counts later snapshots where trips or fare changed; `last_changed_by` is the batch that made the most recent change.
+- **Restated trips:** sum of `final_trips − first_trips`. In this fixture it equals the accepted late-arrival rows, which a test checks.
+
 Row accounting: `raw_rows = accepted_rows + rejected_rows + duplicate_rows` for every committed batch. `corrected_rows` and `late_rows` are subsets of accepted rows, not additional categories.
 
 All rates and totals are calculated from SQL/pipeline output. The dashboard must label synthetic data and use the original metric denominators when filtering. Zone and hourly arrays have distinct grains and cannot be freely cross-filtered without trip-level data.

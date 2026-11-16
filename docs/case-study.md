@@ -1,37 +1,40 @@
-# Case study: make a changing operational dataset trustworthy
+# Case study: making a moving dataset trustworthy
 
-**Setting:** portfolio simulation, 1–14 January 2026, deterministic seed 4026. These findings describe generated data and tested behavior, not a real taxi operator.
+Generated trip data (seed 4026), 1–14 January 2026. Numbers come from `dashboard/data.json` after a clean run.
 
-## Question and approach
+## The problem
 
-Can an analyst trust daily trip totals when the provider resends records and later changes fare values? I separated raw delivery history from the current business fact, then published a dashboard only after reconciliation.
+An operations analyst reports daily trips and fares. The feed resends records, delivers some trips late and corrects fares afterwards. With an append-only load, repeated deliveries inflate counts, late trips land on the wrong day, and yesterday's total changes without anyone knowing why.
 
-The fixture contains a primary delivery, late arrivals and fare corrections. I deliberately injected invalid fare values, unknown zones, missing fields and impossible trip durations. Each batch is checksum-verified and processed transactionally.
+## What I built
 
-## Measured evidence
+Raw batches stay immutable, with a checksum manifest. Each batch loads in one transaction into a canonical `trips` table (latest version per trip), with bad rows quarantined next to it and a ledger row describing what happened. Daily, zone and hourly marts are built by event date. The dashboard file is only replaced after reconciliation passes.
 
-The normal ordered run processes 7,679 delivery rows into 7,200 canonical trips. It suppresses 297 duplicate deliveries, quarantines 80 invalid records, and applies 102 corrections. Every input row is accounted for. Canonical positive fare totals $170,755.66; this is a fixture check, not platform revenue.
+## What the run shows
 
-The quarantine rate is 1.04%, exceeding the proposed 1% investigation threshold. Twenty records occur in each of four categories: invalid fare, unknown zone, missing schema field and invalid duration. The appropriate response is to inspect and repair the source, retaining the rejected evidence.
+- 7,679 rows delivered → 7,200 canonical trips. 297 duplicates suppressed, 80 rows quarantined, 102 corrections applied. Every input row is accounted for.
+- Quarantine is 1.04% of input, just over the 1% threshold I'd use to open an investigation. The rejects split evenly across four causes (20 each): invalid fare, unknown zone, missing field, impossible duration. That pattern points to the source, so the response is to raise it with the provider and keep the evidence, not to loosen the rules.
+- 475 current trips (6.60%) arrived more than 24 hours after dropoff. That count includes corrections, so it measures feed lateness, not pipeline runtime.
 
-The final canonical dataset has 475 late records (6.60%). The count includes newer corrections arriving more than 24 hours after dropoff. It should not be interpreted as a customer-service delay or pipeline execution latency.
+## Restatements
 
-## Engineering conclusions
+This was the part I added after the first version. Event-time marts are correct, but they also mean a published day can change. I snapshot every day's numbers after each batch (in the same transaction) and compare each day's first published value with its current one.
 
-- Batch idempotency prevents reloading the same immutable file; event deduplication prevents repeated records across different files.
-- Source update version and stable business identity are necessary for safe correction logic. Neither can be assumed for a public dataset that lacks them.
-- Event-time marts correct the original business date. Using arrival date would misstate daily demand.
-- Input rejection can bias analytics, so quality evidence belongs beside the business metrics.
-- Transaction rollback and atomic publication are different boundaries. A failed dashboard write can leave a newer database with an older view; the documented replay procedure repairs that gap.
+| Batch | Trips added to published days | Fare change | Days changed |
+|---|---:|---:|---:|
+| 02-late-arrivals | +379 | +$9,205.00 | 14 |
+| 03-corrections | 0 | +$255.00 | 14 |
 
-## Five-slide interview story
+All 14 days moved after first publication, each by about 27 trips and 4.8–7.5% of fare. The biggest single change was 1 January, +$848.49 (+7.47%). With a p95 arrival lag of 50 hours, I'd label a day *provisional* for its first two days and *final* after that. The restatement table is the evidence for that rule.
 
-1. **Problem:** repeated and delayed deliveries make yesterday's trip total move.
-2. **Design:** immutable raw evidence → canonical fact → reconciled marts → atomic snapshot.
-3. **Evidence:** input accounting, 297 suppressed deliveries, 80 visible rejects, 102 applied corrections.
-4. **Failure demo:** deliberately crash a batch and rerun it without partial or duplicate facts.
-5. **Next step:** process one real public monthly source with explicit lineage and benchmark the actual environment.
+## Engineering takeaways
 
-## Limitations and next experiment
+- Skipping an already-loaded batch and deduplicating events are two separate protections. You need both.
+- Corrections only work if the source has a stable ID and an update timestamp. Public TLC data has neither, so it needs a different adapter.
+- Group by event date, not arrival date. Otherwise late trips distort daily demand.
+- Rejected rows can bias the metrics, so quarantine counts belong on the same dashboard as the metrics.
+- The transaction and the file write are separate boundaries. If the write fails after a commit, the database is ahead of the dashboard; the runbook covers replaying the export.
 
-The pipeline is single-writer, local and small. It models a source with stable trip identifiers and update timestamps; official TLC data requires a different source adapter. No production throughput, cloud deployment, real-time SLA or business savings are claimed. The most valuable next milestone is a documented real-source ingestion with source-specific data quality and a measured cost/runtime report.
+## Limits and next step
+
+Single writer, local, small. No production throughput or cloud deployment. The next milestone is one real TLC month through a Parquet adapter, with source-file lineage and a measured runtime and cost.

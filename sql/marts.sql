@@ -35,3 +35,31 @@ CREATE VIEW mart_hourly AS
 SELECT CAST(SUBSTR(pickup_at,12,2) AS INTEGER) AS hour,
        COUNT(*) AS trips, ROUND(SUM(fare_usd),2) AS fare_usd
 FROM trips GROUP BY 1;
+-- Restatement audit: how far each day moved after it was first published.
+DROP VIEW IF EXISTS mart_restatements;
+CREATE VIEW mart_restatements AS
+WITH ordered AS (
+  SELECT date, seq, batch_id, trips, fare_cents,
+         LAG(trips) OVER (PARTITION BY date ORDER BY seq) AS prev_trips,
+         LAG(fare_cents) OVER (PARTITION BY date ORDER BY seq) AS prev_fare,
+         ROW_NUMBER() OVER (PARTITION BY date ORDER BY seq) AS first_rank,
+         ROW_NUMBER() OVER (PARTITION BY date ORDER BY seq DESC) AS last_rank
+  FROM daily_snapshots
+), changes AS (
+  SELECT date, seq, batch_id FROM ordered
+  WHERE prev_trips IS NOT NULL AND (trips<>prev_trips OR fare_cents<>prev_fare)
+), last_change AS (
+  SELECT date, batch_id FROM (
+    SELECT date, batch_id, ROW_NUMBER() OVER (PARTITION BY date ORDER BY seq DESC) AS r FROM changes
+  ) WHERE r=1
+)
+SELECT o.date,
+       MAX(CASE WHEN o.first_rank=1 THEN o.trips END) AS first_trips,
+       MAX(CASE WHEN o.last_rank=1 THEN o.trips END) AS final_trips,
+       MAX(CASE WHEN o.last_rank=1 THEN o.trips END)-MAX(CASE WHEN o.first_rank=1 THEN o.trips END) AS trip_change,
+       MAX(CASE WHEN o.first_rank=1 THEN o.fare_cents END)/100.0 AS first_fare_usd,
+       MAX(CASE WHEN o.last_rank=1 THEN o.fare_cents END)/100.0 AS final_fare_usd,
+       (MAX(CASE WHEN o.last_rank=1 THEN o.fare_cents END)-MAX(CASE WHEN o.first_rank=1 THEN o.fare_cents END))/100.0 AS fare_change_usd,
+       (SELECT COUNT(*) FROM changes c WHERE c.date=o.date) AS revisions,
+       (SELECT batch_id FROM last_change l WHERE l.date=o.date) AS last_changed_by
+FROM ordered o GROUP BY o.date;

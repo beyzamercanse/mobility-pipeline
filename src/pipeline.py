@@ -26,6 +26,10 @@ CREATE TABLE IF NOT EXISTS trips (
  updated_at TEXT NOT NULL, received_at TEXT NOT NULL,
  arrival_lag_hours REAL NOT NULL, source_batch TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS daily_snapshots (
+ seq INTEGER NOT NULL, batch_id TEXT NOT NULL, date TEXT NOT NULL,
+ trips INTEGER NOT NULL, fare_cents INTEGER NOT NULL, PRIMARY KEY(seq, date)
+);
 CREATE TABLE IF NOT EXISTS quarantine (
  batch_id TEXT NOT NULL, row_number INTEGER NOT NULL, reason TEXT NOT NULL,
  raw_json TEXT NOT NULL, PRIMARY KEY(batch_id, row_number)
@@ -135,6 +139,12 @@ def ingest(con, manifest_path, fail_after=None):
             if fail_after and number == fail_after:
                 raise RuntimeError('Injected worker failure')
         con.execute('INSERT INTO batches VALUES (?,?,?,?,?,?,?,?,?)', [batch_id, checksum] + [counts[k] for k in ['raw_rows', 'accepted_rows', 'rejected_rows', 'duplicate_rows', 'corrected_rows', 'late_rows']] + [manifest['received_at']])
+        # What the daily numbers looked like right after this batch, in the same transaction:
+        # a rolled-back batch leaves no snapshot, and restatements can be audited later.
+        con.execute('''INSERT INTO daily_snapshots
+            SELECT (SELECT COUNT(*) FROM batches), ?, SUBSTR(pickup_at,1,10), COUNT(*),
+                   SUM(CAST(ROUND(fare_usd*100) AS INTEGER))
+            FROM trips GROUP BY SUBSTR(pickup_at,1,10)''', (batch_id,))
     return dict(batch_id=batch_id, status='committed', **counts)
 
 
@@ -155,7 +165,24 @@ def export(con, path):
         {'name': 'Input rows accounted for', 'passed': con.execute('SELECT COALESCE(SUM(raw_rows),0)=COALESCE(SUM(accepted_rows+rejected_rows+duplicate_rows),0) FROM batches').fetchone()[0] == 1},
         {'name': 'Valid fare and distance', 'passed': con.execute('SELECT COUNT(*) FROM trips WHERE fare_usd<=0 OR distance_miles<=0').fetchone()[0] == 0},
         {'name': 'Zone mart reconciles', 'passed': abs(sum(z['fare_usd'] for z in zones) - (summary['fare_usd'] or 0)) < .05},
+        {'name': 'Latest snapshot matches daily mart', 'passed': con.execute('''SELECT COUNT(*) FROM mart_daily d
+            LEFT JOIN mart_restatements r ON r.date=d.date
+            WHERE r.date IS NULL OR r.final_trips<>d.trips OR ABS(r.final_fare_usd-d.fare_usd)>0.005''').fetchone()[0] == 0},
     ]
+    restatements = rows(con, 'SELECT * FROM mart_restatements ORDER BY date')
+    by_batch = rows(con, '''WITH o AS (
+        SELECT seq, batch_id,
+               trips - LAG(trips) OVER (PARTITION BY date ORDER BY seq) AS trip_change,
+               fare_cents - LAG(fare_cents) OVER (PARTITION BY date ORDER BY seq) AS fare_change_cents
+        FROM daily_snapshots)
+        SELECT batch_id, SUM(trip_change) AS trip_change, SUM(fare_change_cents)/100.0 AS fare_change_usd,
+               SUM(CASE WHEN trip_change<>0 OR fare_change_cents<>0 THEN 1 ELSE 0 END) AS days_changed
+        FROM o WHERE trip_change IS NOT NULL GROUP BY seq, batch_id ORDER BY seq''')
+    restated = [r for r in restatements if r['revisions']]
+    summary['restated_days'] = len(restated)
+    summary['restated_trips'] = sum(r['trip_change'] for r in restatements)
+    summary['restated_fare_usd'] = round(sum(abs(r['fare_change_usd']) for r in restatements), 2)
+    summary['max_day_fare_change_pct'] = round(max((abs(r['fare_change_usd']) / r['first_fare_usd'] * 100 for r in restated), default=0), 2)
     data = {
         'project': 'Mobility Data Reliability',
         'data_kind': 'synthetic',
@@ -168,9 +195,11 @@ def export(con, path):
         'hourly': rows(con, 'SELECT * FROM mart_hourly ORDER BY hour'),
         'batches': rows(con, 'SELECT * FROM batches ORDER BY received_at, batch_id'),
         'quarantine': rows(con, 'SELECT reason, COUNT(*) AS rows FROM quarantine GROUP BY reason ORDER BY rows DESC'),
+        'restatements': restatements,
+        'restatements_by_batch': by_batch,
         'quality_checks': checks,
         'decision': 'Investigate rejected records before replay; keep valid trips available. Reprocess affected event dates after late arrivals and corrections. These are demo operating policies, not fleet recommendations.',
-        'metric_notes': {'fare_usd': 'Sum of positive fare only, excluding tips, tolls and tax; not company revenue.', 'late_trip_rate': 'Current canonical trips whose received_at is over 24 hours after dropoff_at.', 'quarantine_rate': 'Rejected input rows / raw input rows; duplicate rows remain in the denominator.', 'arrival_lag_p95_hours': 'Nearest-rank p95 over canonical trips; synthetic event time, not measured runtime latency.'}
+        'metric_notes': {'fare_usd': 'Sum of positive fare only, excluding tips, tolls and tax; not company revenue.', 'late_trip_rate': 'Current canonical trips whose received_at is over 24 hours after dropoff_at.', 'quarantine_rate': 'Rejected input rows / raw input rows; duplicate rows remain in the denominator.', 'arrival_lag_p95_hours': 'Nearest-rank p95 over canonical trips; synthetic event time, not measured runtime latency.', 'restatements': 'Per pickup date: trips and fare as first published (after the first batch containing that date) versus now; revisions counts later batches that changed the day.'}
     }
     if not all(check['passed'] for check in checks):
         raise ValueError('Publication blocked: data quality checks failed')

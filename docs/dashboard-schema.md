@@ -4,12 +4,14 @@
 
 - `project`, `data_kind`, `disclosure`, `currency`, `schema_version`: presentation metadata.
 - `period`: `{start,end}` ISO event dates.
-- `summary`: `{trips,fare_usd,avg_fare_usd,distance_miles,late_trips,late_trip_pct,period_start,period_end,raw_rows,rejected_rows,duplicate_rows,corrected_rows,committed_batches,rejection_pct,arrival_lag_p95_hours}`.
+- `summary`: `{trips,fare_usd,avg_fare_usd,distance_miles,late_trips,late_trip_pct,period_start,period_end,raw_rows,rejected_rows,duplicate_rows,corrected_rows,committed_batches,rejection_pct,arrival_lag_p95_hours,restated_days,restated_trips,restated_fare_usd,max_day_fare_change_pct}`.
 - `daily`: rows `{date,trips,fare_usd,avg_fare_usd,late_trips}`.
 - `zones`: rows `{pickup_zone,zone,trips,fare_usd,avg_distance_miles,avg_duration_min,late_trips}`.
 - `hourly`: rows `{hour,trips,fare_usd}`; hour is UTC 0–23 across the entire period.
 - `batches`: committed ledger rows `{batch_id,sha256,raw_rows,accepted_rows,rejected_rows,duplicate_rows,corrected_rows,late_rows,received_at}`.
 - `quarantine`: rows `{reason,rows}`.
+- `restatements`: rows `{date,first_trips,final_trips,trip_change,first_fare_usd,final_fare_usd,fare_change_usd,revisions,last_changed_by}`.
+- `restatements_by_batch`: rows `{batch_id,trip_change,fare_change_usd,days_changed}`, changes a batch made to days that were already published.
 - `quality_checks`: rows `{name,passed}`.
 - `decision`: plain-language operating policy.
 - `metric_notes`: key definitions for caveats and tooltips.
