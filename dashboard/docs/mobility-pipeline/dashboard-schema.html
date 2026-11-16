@@ -1,0 +1,16 @@
+<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>dashboard-schema · mobility-pipeline</title><link rel="stylesheet" href="../../assets/style.css"><body><main class="doc-page"><a href="../../index.html#mobility-pipeline/evidence">← Back to project evidence</a><h1>Dashboard JSON schema</h1>
+<p><code>dashboard/data.json</code> is reproducibly generated; never hand-edit its numbers.</p>
+<ul>
+<li><code>project</code>, <code>data_kind</code>, <code>disclosure</code>, <code>currency</code>, <code>schema_version</code>: presentation metadata.</li>
+<li><code>period</code>: <code>{start,end}</code> ISO event dates.</li>
+<li><code>summary</code>: <code>{trips,fare_usd,avg_fare_usd,distance_miles,late_trips,late_trip_pct,period_start,period_end,raw_rows,rejected_rows,duplicate_rows,corrected_rows,committed_batches,rejection_pct,arrival_lag_p95_hours}</code>.</li>
+<li><code>daily</code>: rows <code>{date,trips,fare_usd,avg_fare_usd,late_trips}</code>.</li>
+<li><code>zones</code>: rows <code>{pickup_zone,zone,trips,fare_usd,avg_distance_miles,avg_duration_min,late_trips}</code>.</li>
+<li><code>hourly</code>: rows <code>{hour,trips,fare_usd}</code>; hour is UTC 0–23 across the entire period.</li>
+<li><code>batches</code>: committed ledger rows <code>{batch_id,sha256,raw_rows,accepted_rows,rejected_rows,duplicate_rows,corrected_rows,late_rows,received_at}</code>.</li>
+<li><code>quarantine</code>: rows <code>{reason,rows}</code>.</li>
+<li><code>quality_checks</code>: rows <code>{name,passed}</code>.</li>
+<li><code>decision</code>: plain-language operating policy.</li>
+<li><code>metric_notes</code>: key definitions for caveats and tooltips.</li>
+</ul>
+<p>Recommended dashboard: top row canonical trips / quarantine share / duplicate deliveries / late share; daily trips plot; zone demand bar chart; batch ledger; quarantine reason breakdown; visible data provenance. A daily-date filter can aggregate <code>daily</code>; zone and hourly summaries remain full-period and must be labeled accordingly. No arbitrary joint date × zone filtering is available from these aggregate arrays.</p></main></body></html>

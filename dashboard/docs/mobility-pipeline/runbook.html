@@ -1,0 +1,30 @@
+<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>runbook · mobility-pipeline</title><link rel="stylesheet" href="../../assets/style.css"><body><main class="doc-page"><a href="../../index.html#mobility-pipeline/evidence">← Back to project evidence</a><h1>Incident runbook</h1>
+<h2>1. Checksum mismatch or schema version change</h2>
+<p><strong>Symptom:</strong> the pipeline exits before loading a batch. <strong>Impact:</strong> prior dashboard snapshot remains; no rows from that failed batch are committed.</p>
+<ul>
+<li>Inspect the manifest and compare its expected SHA-256 with the stored bytes.</li>
+<li>Preserve the suspect batch for diagnosis; do not “fix” the checksum to force a load.</li>
+<li>Ask the source owner for a corrected export, saved under a new batch ID.</li>
+<li>If the contract genuinely changed, version the adapter and tests before processing.</li>
+<li>Replay with <code>--batch filename.manifest.json</code>, then verify the ledger and reconciliation.</li>
+</ul>
+<h2>2. Reject-rate alert</h2>
+<p>The proposed operational threshold is &gt;1%; the synthetic fixture deliberately triggers it at 1.04%. No automated alert dispatch is implemented.</p>
+<ul>
+<li>Inspect <code>dashboard/data.json</code> → <code>quarantine</code>, then query <code>quarantine</code> for raw lines.</li>
+<li>Classify schema, unknown-zone, duration and fare defects separately.</li>
+<li>Confirm the accepted facts are still fit for the intended use; high rejection may bias demand totals.</li>
+<li>Fix the upstream data/contract. Submit a new correction batch; retain rejected evidence.</li>
+<li>Do not delete the old reject ledger or quietly replace the original file.</li>
+</ul>
+<h2>3. Worker failure during a batch</h2>
+<p><code>tests/test_pipeline.py::test_worker_failure_rolls_back_entire_batch</code> injects an exception after a row and asserts facts plus batch ledger remain empty. Rerunning the same batch then succeeds. The transaction handles SQLite commit atomicity; local raw files stay intact.</p>
+<p>Run the drill:</p>
+<pre><code>python3 -m unittest discover -s tests -v</code></pre>
+<h2>4. Late deliveries or corrections</h2>
+<p>Use the source update timestamp to choose the canonical row. Verify the original pickup date&#x27;s total changes, not the arrival date&#x27;s total. <code>test_new_version_corrects_prior_event_day</code> covers this behavior. Full views recompute locally; a cloud implementation must explicitly repair affected partitions.</p>
+<h2>5. Dashboard write failure</h2>
+<p>A failed atomic replace leaves the old published file. The database may already contain the new batch. Restore disk capacity/permissions and rerun: unchanged batches are skipped, the JSON is regenerated, then atomically replaced. <code>test_failed_atomic_replace_preserves_dashboard</code> covers the preservation behavior.</p>
+<h2>6. Full rebuild / disaster recovery</h2>
+<pre><code>python3 src/pipeline.py --db data/rebuilt.sqlite --output dashboard/rebuilt.json</code></pre>
+<p>Compare canonical trip counts, fare total and quality checks with the expected snapshot. Operational correction/duplicate counters may differ if batches are deliberately replayed out of order, but the final fact state must agree. This repository retains raw versions, not managed backups; backup retention and access controls belong in the production extension.</p></main></body></html>

@@ -1,0 +1,71 @@
+<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>architecture · mobility-pipeline</title><link rel="stylesheet" href="../../assets/style.css"><body><main class="doc-page"><a href="../../index.html#mobility-pipeline/evidence">← Back to project evidence</a><h1>Architecture and implementation design</h1>
+<h2>Users and acceptance criteria</h2>
+<p>The operations analyst needs trip count, positive fare totals, demand by local demo zone and time of day. The data engineer needs a visible audit trail and a deterministic recovery procedure.</p>
+<p>Acceptance criteria:</p>
+<ul>
+<li>Replaying any already committed unchanged batch produces no additional facts or ledger rows.</li>
+<li>Every input row is accepted, quarantined, or classified as duplicate/stale; counts reconcile exactly.</li>
+<li>A newer correction affects the original event date. An older version never reverses it.</li>
+<li>A worker exception commits neither partial facts nor a completed batch entry.</li>
+<li>A dashboard is replaced only after checks pass; filesystem failure preserves its previous bytes.</li>
+<li>Source corruption fails before ingestion; it cannot be disguised as a valid replay.</li>
+</ul>
+<h2>Implemented local architecture</h2>
+<pre><code>flowchart TB
+    A[generate_demo.py: seeded provider fixture] --&gt; B[data/raw: immutable JSONL]
+    A --&gt; C[Manifest: schema_version, checksum, row_count]
+    B --&gt; D[Checksum + schema-version gate]
+    C --&gt; D
+    D --&gt; E[Record validation]
+    subgraph Transaction[One SQLite transaction per batch]
+        E --&gt; F[trips: one current row per trip_id]
+        E --&gt; G[quarantine: one rejected delivery per batch + line]
+        E --&gt; H[batches: immutable commit audit]
+    end
+    F --&gt; I[SQL marts by pickup event date / zone / hour]
+    G --&gt; J[Quality and reconciliation checks]
+    H --&gt; J
+    I --&gt; J
+    J --&gt; K[Write temporary JSON + atomic replace]
+    K --&gt; L[Browser dashboard snapshot]</code></pre>
+<p>| Layer | Grain / key | Implementation |</p>
+<p>| --- | --- | --- |</p>
+<p>| Raw | one delivery per JSONL line | versioned file + SHA-256 manifest |</p>
+<p>| Batch audit | one committed batch | <code>batch_id</code> primary key; immutable checksum |</p>
+<p>| Canonical fact | one current trip | <code>trip_id</code> primary key; compare <code>updated_at</code> |</p>
+<p>| Quarantine | one invalid delivery | <code>(batch_id,row_number)</code> primary key |</p>
+<p>| Daily mart | one pickup event date | view over current facts |</p>
+<p>| Zone mart | one local pickup zone | view over current facts |</p>
+<p>| Hour mart | one UTC pickup hour across the entire period | view over current facts |</p>
+<p>The fixture&#x27;s canonical timestamps are UTC. This is a test-source contract, not a claim that TLC source timestamps are UTC. For actual TLC data, source-local timestamp conventions and daylight-saving ambiguity must be addressed explicitly.</p>
+<h2>Choices and tradeoffs</h2>
+<p><strong>SQLite and the standard library:</strong> make a reviewer able to reproduce failure behavior without credentials or installation. SQLite is appropriate for the small single-writer demo, not a distributed warehouse benchmark.</p>
+<p><strong>Latest-version canonical table:</strong> the source promises stable trip IDs and monotonically increasing update times. Earlier versions remain available in raw files. Same-version records with conflicting fields are quarantined. Identical/stale versions are ignored; received time alone cannot revise a business fact.</p>
+<p><strong>Immutable raw capture:</strong> generator refuses changed bytes under the same filename; ingestion verifies every checksum, including a replay. This is application-enforced immutability, not storage-level object locking. Operators with write permissions can still change local files, which checksum verification detects unless all trust records are compromised.</p>
+<p><strong>Late arrivals:</strong> the pipeline uses event date, not ingestion date, for the analytical grain. Local marts are views over the entire canonical table, so corrections are reflected automatically. At warehouse scale, track affected event-date partitions and replace those partitions after validating the new version. Do not simply process <code>event_date &gt;= yesterday</code>.</p>
+<p><strong>Atomic commit and publication:</strong> database mutation and the batch ledger share a transaction. The JSON snapshot is atomically replaced after validation. Database commit and file publication are not a distributed transaction: a failed publication can leave a newer database and an older dashboard. The next run verifies the batches and regenerates the snapshot. Tests cover this preservation behavior.</p>
+<p><strong>Quarantine versus stop:</strong> invalid individual records are isolated so valid data remains available. Unsupported batch schema, checksum mismatch and immutable-ID conflicts fail the whole batch. The current implementation does not automatically stop on a quarantine-rate threshold; the dashboard and runbook expose a proposed alert policy.</p>
+<h2>Proposed cloud extension — not deployed</h2>
+<pre><code>flowchart LR
+    A[Provider export or TLC monthly Parquet] --&gt; B[S3 immutable raw objects + manifests]
+    B --&gt; C[Airflow scheduled partitions / retry policy]
+    C --&gt; D[DuckDB or warehouse source adapter]
+    D --&gt; E[Validated warehouse staging + rejected records]
+    E --&gt; F[dbt canonical facts + affected-date marts]
+    F --&gt; G[dbt tests + reconciliation gates]
+    G --&gt; H[Versioned BI snapshot + freshness metadata]
+    C --&gt; I[Run logs / freshness / quality alerts]</code></pre>
+<p>Start with bounded monthly batch processing. Streaming and Kafka are not justified by TLC&#x27;s monthly publication cadence. Only introduce them for a different source with a real-time decision requirement.</p>
+<p>Production implementation milestones:</p>
+<ul>
+<li>Select one TLC year/month and retain its official data dictionary and downloaded-file checksum.</li>
+<li>Implement a Parquet adapter with a separate schema version and explicit column mapping; preserve source filename and source row index.</li>
+<li>Replace local demo IDs with official zones. Handle invalid/missing zones without mapping them to fake geography.</li>
+<li>Use file hash + row position as source-record lineage. Do not invent reliable trip-level business keys from undocumented source columns. A hash of all attributes could collapse legitimate identical trips.</li>
+<li>Make downloaded monthly files the backfill unit; preserve revisions under new immutable object versions.</li>
+<li>Add orchestrator retries and bounded partition concurrency; test forced timeout, schema change and object replacement.</li>
+<li>Measure row counts, query scan bytes, elapsed runtime and cost on the actual environment. Publish measurements and commands, never guessed percentages.</li>
+<li>Wire cloud secrets through the platform&#x27;s secret store and service accounts with minimum object/warehouse privileges.</li>
+</ul>
+<h2>Service-level targets to implement</h2>
+<p>These are proposed targets, not observed production SLAs: publish within 30 minutes of a verified batch landing; page on checksum/schema failure; alert if reject rate exceeds 1% or grows 0.5 percentage points; explicitly show the latest source period. For monthly public sources, track expected release cadence separately from event age. A January historical sample is not a stale pipeline simply because today&#x27;s date is November.</p></main></body></html>

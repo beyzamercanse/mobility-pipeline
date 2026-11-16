@@ -1,0 +1,12 @@
+__pycache__/
+*.pyc
+*.sqlite
+*.sqlite-journal
+*.sqlite-wal
+*.sqlite-shm
+data/raw/*.jsonl
+data/raw/*.manifest.json
+data/reference/
+dashboard/rebuilt.json
+*.tmp
+.DS_Store

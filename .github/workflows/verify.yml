@@ -1,0 +1,18 @@
+name: Verify reproducible pipeline
+on: [push, pull_request]
+jobs:
+  pipeline:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python -m unittest discover -s tests -v
+      - run: python src/generate_demo.py
+      - run: python src/pipeline.py
+      - name: Verify idempotent publication
+        run: |
+          cp dashboard/data.json /tmp/mobility-first.json
+          python src/pipeline.py
+          cmp dashboard/data.json /tmp/mobility-first.json
